@@ -1,0 +1,29 @@
+name: Daily JustWatch Update
+
+on:
+  schedule:
+    - cron: '0 14 * * *'  # 2 PM UTC (6 AM PST / 9 AM EST)
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  fetch-and-notify:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py
+

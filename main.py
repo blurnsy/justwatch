@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
 import json
+import os
 import random
 import string
 import requests
 import urllib3
+from collections import defaultdict
 from datetime import date as date_module
 from typing import Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+SUBSCRIBED_SERVICES = {
+    "Amazon Prime": ["Amazon Prime Video", "Amazon Prime Video Free with Ads"],
+    "Apple TV": ["Apple TV", "Apple TV+", "Apple TV Plus"],
+    "Disney Plus": ["Disney Plus", "Disney+"],
+    "HBO Max": ["HBO Max", "Max", "Max Amazon Channel", "HBO Max Amazon Channel"],
+    "Hulu": ["Hulu"],
+    "Netflix": ["Netflix"],
+    "Peacock": ["Peacock Premium", "Peacock"],
+}
 
 def generate_device_id() -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=22))
@@ -206,17 +223,120 @@ def extract_title_info(node: dict) -> dict:
     }
 
 
+def normalize_service_name(raw_service: str | None) -> str | None:
+    if not raw_service:
+        return None
+    for normalized_name, variants in SUBSCRIBED_SERVICES.items():
+        if raw_service in variants:
+            return normalized_name
+    return None
+
+
+def filter_and_group_titles(titles: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for title in titles:
+        normalized = normalize_service_name(title.get("streaming_service"))
+        if normalized:
+            grouped[normalized].append(title)
+    return dict(grouped)
+
+
+def format_title_line(title: dict) -> str:
+    name = title.get("show_title") or title.get("title") or "Unknown"
+    title_type = title.get("type", "")
+    imdb = title.get("imdb_score")
+    
+    if title_type == "SHOW_SEASON" and title.get("title"):
+        season_info = title.get("title")
+        if season_info != name:
+            name = f"{name} - {season_info}"
+    
+    if imdb:
+        return f"• {name} *(IMDb: {imdb})*"
+    return f"• {name}"
+
+
+def build_combined_description(grouped_titles: dict[str, list[dict]]) -> str:
+    sections = []
+    
+    for service_name in sorted(grouped_titles.keys()):
+        titles = grouped_titles.get(service_name, [])
+        if not titles:
+            continue
+        
+        title_lines = [format_title_line(t) for t in titles[:10]]
+        section = f"**{service_name}** ({len(titles)})\n" + "\n".join(title_lines)
+        
+        if len(titles) > 10:
+            section += f"\n*...and {len(titles) - 10} more*"
+        
+        sections.append(section)
+    
+    return "\n\n".join(sections)
+
+
+def send_to_discord(grouped_titles: dict[str, list[dict]]) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        raise ValueError("DISCORD_WEBHOOK_URL environment variable is not set")
+    
+    total_titles = sum(len(t) for t in grouped_titles.values())
+    if total_titles == 0:
+        print("No titles to send")
+        return
+    
+    description = build_combined_description(grouped_titles)
+    
+    embed = {
+        "title": f"🎬 New Streaming Titles",
+        "description": description,
+        "color": 0x5865F2,
+        "footer": {"text": f"{total_titles} new title(s) • {date_module.today().isoformat()}"},
+    }
+    
+    payload = {"embeds": [embed]}
+    
+    response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    if response.ok:
+        print(f"✓ Sent combined embed ({total_titles} titles)")
+    else:
+        print(f"✗ Failed to send: {response.status_code} - {response.text}")
+
+
+def load_from_json(filepath: str) -> list[dict]:
+    with open(filepath, "r") as f:
+        return json.load(f)
+
+
+def process_and_send(results: list[dict]) -> None:
+    grouped = filter_and_group_titles(results)
+    
+    print(f"\nFiltered to {sum(len(t) for t in grouped.values())} titles across {len(grouped)} services:")
+    for service in sorted(grouped.keys()):
+        print(f"  {service}: {len(grouped[service])} titles")
+    
+    print("\nSending to Discord...")
+    send_to_discord(grouped)
+    print("Done!")
+
+
 def main():
-    print("Fetching new titles from JustWatch...")
-    titles = fetch_new_titles()
+    import sys
     
-    results = [extract_title_info(node) for node in titles]
+    if len(sys.argv) > 1:
+        filepath = sys.argv[1]
+        print(f"Loading from {filepath}...")
+        results = load_from_json(filepath)
+    else:
+        print("Fetching new titles from JustWatch...")
+        titles = fetch_new_titles()
+        results = [extract_title_info(node) for node in titles]
+        
+        output_file = f"new_titles_{date_module.today().isoformat()}.json"
+        with open(output_file, "w") as f:
+            json.dump(results, f, indent=2)
+        print(f"Saved {len(results)} titles to {output_file}")
     
-    output_file = f"new_titles_{date_module.today().isoformat()}.json"
-    with open(output_file, "w") as f:
-        json.dump(results, f, indent=2)
-    
-    print(f"Saved {len(results)} titles to {output_file}")
+    process_and_send(results)
 
 
 if __name__ == "__main__":
