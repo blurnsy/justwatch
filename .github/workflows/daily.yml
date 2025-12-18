@@ -2,7 +2,7 @@ name: Daily JustWatch Update
 
 on:
   schedule:
-    - cron: '0 14 * * *'  # 2 PM UTC (6 AM PST / 9 AM EST)
+    - cron: '0 12 * * *'  # 6 AM CST (12 PM UTC)
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
